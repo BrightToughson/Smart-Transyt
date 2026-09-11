@@ -14,7 +14,7 @@ export default function EditProfile() {
   const [username, setUsername] = useState(user?.username || '');
   const [email, setEmail] = useState(user?.primaryEmailAddress?.emailAddress || '');
   
-  const initialPhone = user?.primaryPhoneNumber?.phoneNumber || '';
+  const initialPhone = (user?.unsafeMetadata?.phoneNumber as string) || user?.primaryPhoneNumber?.phoneNumber || '';
   const defaultPhone = initialPhone.startsWith('+233') ? initialPhone.replace('+233', '') : initialPhone.replace(/^0+/, '');
   const [phoneNumber, setPhoneNumber] = useState(defaultPhone);
   
@@ -23,10 +23,8 @@ export default function EditProfile() {
 
   // Verification state
   const [isVerifyingEmail, setIsVerifyingEmail] = useState(false);
-  const [isVerifyingPhone, setIsVerifyingPhone] = useState(false);
   const [verificationCode, setVerificationCode] = useState('');
   const [pendingEmailObj, setPendingEmailObj] = useState<any>(null);
-  const [pendingPhoneObj, setPendingPhoneObj] = useState<any>(null);
 
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
@@ -70,6 +68,17 @@ export default function EditProfile() {
         updatePayload.username = username.trim();
       }
 
+      // Handle phone update if changed
+      const formattedPhone = phoneNumber ? `+233${phoneNumber}` : '';
+      const currentPhone = (user?.unsafeMetadata?.phoneNumber as string) || user?.primaryPhoneNumber?.phoneNumber || '';
+      
+      if (formattedPhone !== currentPhone) {
+        updatePayload.unsafeMetadata = {
+          ...user?.unsafeMetadata,
+          phoneNumber: formattedPhone
+        };
+      }
+
       await user?.update(updatePayload);
 
       // Handle email update if changed
@@ -95,29 +104,7 @@ export default function EditProfile() {
         }
       }
 
-      // Handle phone update if changed
-      const formattedPhone = phoneNumber ? `+233${phoneNumber}` : '';
 
-      const currentPhone = user?.primaryPhoneNumber?.phoneNumber || '';
-      if (formattedPhone !== currentPhone && formattedPhone !== '') {
-        let phoneObj = user?.phoneNumbers.find((p: any) => p.phoneNumber === formattedPhone);
-        
-        if (!phoneObj) {
-          phoneObj = await user?.createPhoneNumber({ phoneNumber: formattedPhone });
-        }
-        
-        if (phoneObj?.verification?.status === 'verified') {
-          await user?.update({ primaryPhoneNumberId: phoneObj?.id });
-        } else if (phoneObj) {
-          // @ts-ignore
-          await phoneObj?.prepareVerification({ strategy: 'phone_code' });
-          
-          setPendingPhoneObj(phoneObj);
-          setIsVerifyingPhone(true);
-          setIsUpdating(false);
-          return; // Stop here and show verification UI
-        }
-      }
 
       Alert.alert('Success', 'Profile updated successfully!', [
         { text: 'OK', onPress: () => router.push('/(drawer)/profile') }
@@ -160,43 +147,15 @@ export default function EditProfile() {
     }
   };
 
-  const handleVerifyPhone = async () => {
-    if (!verificationCode || verificationCode.length < 6) {
-      Alert.alert('Error', 'Please enter a valid 6-digit code.');
-      return;
-    }
 
-    setIsUpdating(true);
-    try {
-      const phoneToVerify = user?.phoneNumbers.find((p: any) => p.id === pendingPhoneObj?.id) || pendingPhoneObj;
-      
-      const verifiedPhone = await phoneToVerify.attemptVerification({ code: verificationCode });
-      
-      if (verifiedPhone.verification.status === 'verified') {
-        await user?.update({ primaryPhoneNumberId: verifiedPhone.id });
-        
-        Alert.alert('Success', 'Phone number verified and profile updated!', [
-          { text: 'OK', onPress: () => router.push('/(drawer)/profile') }
-        ]);
-      } else {
-        Alert.alert('Error', 'Verification failed. Please try again.');
-      }
-    } catch (err: any) {
-      console.error(err);
-      Alert.alert('Error', err.errors?.[0]?.message || 'Invalid verification code.');
-    } finally {
-      setIsUpdating(false);
-    }
-  };
 
-  if (isVerifyingEmail || isVerifyingPhone) {
-    const isEmail = isVerifyingEmail;
+  if (isVerifyingEmail) {
     return (
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View className="flex-1 bg-gray-50 px-6 pt-12">
-        <Text className="text-gray-900 font-black text-2xl mb-2">Verify {isEmail ? 'Email' : 'Phone'}</Text>
+        <Text className="text-gray-900 font-black text-2xl mb-2">Verify Email</Text>
         <Text className="text-gray-500 text-[15px] mb-8">
-          We sent a 6-digit verification code to <Text className="font-bold text-gray-800">{isEmail ? email : phoneNumber}</Text>. Please enter it below.
+          We sent a 6-digit verification code to <Text className="font-bold text-gray-800">{email}</Text>. Please enter it below. (Check your spam/junk folder if you don't see it).
         </Text>
 
         <View className="mb-8">
@@ -217,7 +176,7 @@ export default function EditProfile() {
 
         <TouchableOpacity
           className={`h-[56px] rounded-2xl flex-row items-center justify-center shadow-lg shadow-primary/30 ${isUpdating ? 'bg-blue-400' : 'bg-primary'}`}
-          onPress={isEmail ? handleVerifyEmail : handleVerifyPhone}
+          onPress={handleVerifyEmail}
           disabled={isUpdating}
         >
           {isUpdating ? (
@@ -234,9 +193,7 @@ export default function EditProfile() {
           className="h-[56px] rounded-2xl flex-row items-center justify-center mt-4 border border-gray-200 bg-white"
           onPress={() => {
             setIsVerifyingEmail(false);
-            setIsVerifyingPhone(false);
             setPendingEmailObj(null);
-            setPendingPhoneObj(null);
             setVerificationCode('');
           }}
           disabled={isUpdating}

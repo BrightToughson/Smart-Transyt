@@ -22,9 +22,11 @@ WebBrowser.maybeCompleteAuthSession();
 
 export default function SignUp() {
   useWarmUpBrowser();
-  // @ts-ignore
-  const { isLoaded, signUp, setActive } = useSignUp();
   const clerk = useClerk();
+  const isLoaded = clerk.loaded;
+  const signUp = clerk.client?.signUp;
+  const setActive = clerk.setActive;
+  
   const router = useRouter();
   const { startOAuthFlow } = useOAuth({ strategy: 'oauth_google' });
 
@@ -44,6 +46,7 @@ export default function SignUp() {
   const [isLoading, setIsLoading] = useState(false);
   const [oauthMissingFields, setOauthMissingFields] = useState(false);
   const [oauthUsername, setOauthUsername] = useState('');
+  const [pendingOAuthSignUp, setPendingOAuthSignUp] = useState<any>(null);
 
   // Traditional Sign Up
   const onSignUpPress = async () => {
@@ -66,9 +69,11 @@ export default function SignUp() {
 
       const payload: any = {
         emailAddress: identifier,
-        phoneNumber: formattedPhone,
         username,
         password,
+        unsafeMetadata: {
+          phoneNumber: formattedPhone,
+        }
       };
 
       await signUp.create(payload);
@@ -135,6 +140,7 @@ export default function SignUp() {
           await setOAuthActive({ session: oAuthSignUp.createdSessionId });
           router.replace('/(drawer)');
         } else if (oAuthSignUp?.status === 'missing_requirements') {
+          setPendingOAuthSignUp(oAuthSignUp);
           setOauthMissingFields(true);
         } else {
           Alert.alert(
@@ -152,13 +158,16 @@ export default function SignUp() {
   }, [isLoading]);
 
   const onOauthMissingSubmit = async () => {
-    if (!signUp || isLoading) return;
+    const targetSignUp = pendingOAuthSignUp || signUp;
+    if (!targetSignUp || isLoading) return;
     setIsLoading(true);
     try {
       const updatePayload: any = {};
       if (oauthUsername) updatePayload.username = oauthUsername;
+      if (targetSignUp.firstName) updatePayload.firstName = targetSignUp.firstName;
+      if (targetSignUp.lastName) updatePayload.lastName = targetSignUp.lastName;
       
-      const result: any = await signUp.update(updatePayload);
+      const result: any = await targetSignUp.update(updatePayload);
       
       if (result && result.error) {
         Alert.alert('Update Failed', JSON.stringify(result.error, null, 2));
@@ -166,16 +175,13 @@ export default function SignUp() {
         return;
       }
       
-      // If result is the updated resource itself (clerk-js standard), use it, otherwise use freshSignUp
-      const freshSignUp = result?.status ? result : clerk.client.signUp;
+      const freshSignUp = result?.status ? result : targetSignUp;
 
       if (freshSignUp.status === 'complete') {
-        // @ts-ignore
         await setActive({ session: freshSignUp.createdSessionId });
         router.replace('/(drawer)');
       } else if (freshSignUp.status === 'missing_requirements') {
         if (freshSignUp.unverifiedFields.includes('email_address')) {
-          // @ts-ignore
           await freshSignUp.prepareEmailAddressVerification({ strategy: 'email_code' });
           setPendingVerification(true);
         } else {
@@ -404,7 +410,7 @@ export default function SignUp() {
                    <Text className="text-3xl">✉️</Text>
                 </View>
                 <Text className="text-2xl font-semibold text-gray-900 mb-2">Verify Account</Text>
-                <Text className="text-gray-500 text-sm text-center px-4">We've sent a verification code to your email.</Text>
+                <Text className="text-gray-500 text-sm text-center px-4">We've sent a verification code to your email. Please check your spam/junk folder if you don't see it.</Text>
               </View>
 
               <View className="space-y-6">

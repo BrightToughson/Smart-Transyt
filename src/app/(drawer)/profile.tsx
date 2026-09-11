@@ -67,7 +67,7 @@ export default function Profile() {
           </View>
           <View className="flex-1">
             <Text className="text-gray-500 text-[12px] mb-1">Phone Number</Text>
-            <Text className="text-gray-900 font-bold text-[15px]">{user?.primaryPhoneNumber?.phoneNumber || '+233 24 123 4567'}</Text>
+            <Text className="text-gray-900 font-bold text-[15px]">{(user?.unsafeMetadata?.phoneNumber as string) || user?.primaryPhoneNumber?.phoneNumber || '+233 24 123 4567'}</Text>
           </View>
         </View>
 

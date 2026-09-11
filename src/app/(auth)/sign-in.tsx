@@ -21,16 +21,17 @@ WebBrowser.maybeCompleteAuthSession();
 
 export default function SignIn() {
   useWarmUpBrowser();
-  // @ts-ignore
-  const { isLoaded, signIn, setActive } = useSignIn();
-  // @ts-ignore
-  const { isLoaded: signUpLoaded, signUp, setActive: setSignUpActive } = useSignUp();
   const clerk = useClerk();
+  const isLoaded = clerk.loaded;
+  const signIn = clerk.client?.signIn;
+  const signUp = clerk.client?.signUp;
+  const setActive = clerk.setActive;
+
   const router = useRouter();
   const { startOAuthFlow } = useOAuth({ strategy: 'oauth_google' });
 
   // Form State
-  const [identifier, setIdentifier] = useState(''); // Email, Phone, or Username
+  const [identifier, setIdentifier] = useState(''); // Email or Username
   const [password, setPassword] = useState('');
   
   // UI State
@@ -39,6 +40,7 @@ export default function SignIn() {
   const [isLoading, setIsLoading] = useState(false);
   const [oauthMissingFields, setOauthMissingFields] = useState(false);
   const [oauthUsername, setOauthUsername] = useState('');
+  const [pendingOAuthSignUp, setPendingOAuthSignUp] = useState<any>(null);
   const [pendingVerification, setPendingVerification] = useState(false);
   const [code, setCode] = useState('');
 
@@ -98,6 +100,7 @@ export default function SignIn() {
             const suggestedUsername = oAuthSignUp.firstName.toLowerCase().replace(/[^a-z0-9]/g, '');
             setOauthUsername(suggestedUsername);
           }
+          setPendingOAuthSignUp(oAuthSignUp);
           setOauthMissingFields(true);
         } else {
           Alert.alert(
@@ -126,7 +129,7 @@ export default function SignIn() {
       const completeSignUp = await signUp.attemptEmailAddressVerification({ code });
 
       if (completeSignUp.status === 'complete') {
-        await setSignUpActive({ session: completeSignUp.createdSessionId });
+        await setActive({ session: completeSignUp.createdSessionId });
         router.replace('/(drawer)');
       } else {
         console.error(JSON.stringify(completeSignUp, null, 2));
@@ -141,13 +144,16 @@ export default function SignIn() {
   };
 
   const onOauthMissingSubmit = async () => {
-    if (!signUp || isLoading) return;
+    const targetSignUp = pendingOAuthSignUp || signUp;
+    if (!targetSignUp || isLoading) return;
     setIsLoading(true);
     try {
       const updatePayload: any = {};
       if (oauthUsername) updatePayload.username = oauthUsername;
+      if (targetSignUp.firstName) updatePayload.firstName = targetSignUp.firstName;
+      if (targetSignUp.lastName) updatePayload.lastName = targetSignUp.lastName;
       
-      const result: any = await signUp.update(updatePayload);
+      const result: any = await targetSignUp.update(updatePayload);
       
       if (result && result.error) {
         Alert.alert('Update Failed', JSON.stringify(result.error, null, 2));
@@ -155,15 +161,13 @@ export default function SignIn() {
         return;
       }
       
-      // If result is the updated resource itself (clerk-js standard), use it, otherwise use freshSignUp
-      const freshSignUp = result?.status ? result : clerk.client.signUp;
+      const freshSignUp = result?.status ? result : targetSignUp;
 
       if (freshSignUp.status === 'complete') {
-        await setSignUpActive({ session: freshSignUp.createdSessionId });
+        await setActive({ session: freshSignUp.createdSessionId });
         router.replace('/(drawer)');
       } else if (freshSignUp.status === 'missing_requirements') {
         if (freshSignUp.unverifiedFields.includes('email_address')) {
-          // @ts-ignore
           await freshSignUp.prepareEmailAddressVerification({ strategy: 'email_code' });
           setPendingVerification(true);
         } else {
@@ -240,7 +244,7 @@ export default function SignIn() {
                    <Text className="text-3xl">✉️</Text>
                 </View>
                 <Text className="text-2xl font-semibold text-gray-900 mb-2">Verify Account</Text>
-                <Text className="text-gray-500 text-sm text-center px-4">We've sent a verification code to your email.</Text>
+                <Text className="text-gray-500 text-sm text-center px-4">We've sent a verification code to your email. Please check your spam/junk folder if you don't see it.</Text>
               </View>
 
               <View className="space-y-6">

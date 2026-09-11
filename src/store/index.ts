@@ -14,6 +14,25 @@ export const useWalletStore = create<WalletState>((set) => ({
   deductFunds: (amount) => set((state) => ({ balance: Math.max(0, state.balance - amount) })),
 }));
 
+export interface TripRecord {
+  id: string;
+  date: string;
+  route: string;
+  destination: string;
+  fare: number;
+  paymentMethod: string;
+}
+
+interface HistoryState {
+  history: TripRecord[];
+  addRecord: (record: TripRecord) => void;
+}
+
+export const useHistoryStore = create<HistoryState>((set) => ({
+  history: [],
+  addRecord: (record) => set((state) => ({ history: [record, ...state.history] })),
+}));
+
 interface LocationState {
   destination: string | null;
   setDestination: (destination: string | null) => void;

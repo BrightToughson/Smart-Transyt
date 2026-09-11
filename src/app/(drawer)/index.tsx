@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { KeyboardAvoidingView, View, Text, TextInput, TouchableOpacity, SafeAreaView, Platform, Animated, PanResponder, Dimensions, ScrollView, Image } from 'react-native';
+import { KeyboardAvoidingView, View, Text, TextInput, TouchableOpacity, SafeAreaView, Platform, Animated, PanResponder, Dimensions, ScrollView, Image, LayoutAnimation, UIManager } from 'react-native';
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 import { useUser } from '@clerk/expo';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import MapView, { Marker, Polyline, Callout } from '@/components/Map';
-import { useLocationStore, useWalletStore } from '@/store';
+import { useLocationStore, useWalletStore, useHistoryStore } from '@/store';
 import { useRouter, useNavigation } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import * as Location from 'expo-location';
@@ -33,6 +37,7 @@ export default function Home() {
   const [weather, setWeather] = useState<{ temp: number, icon: string } | null>(null);
   const { setDestination, destination } = useLocationStore();
   const balance = useWalletStore((state) => state.balance);
+  const addRecord = useHistoryStore((state) => state.addRecord);
   const router = useRouter();
   const navigation = useNavigation();
 
@@ -143,6 +148,35 @@ export default function Home() {
     }
   }, [boardingStop, userLocation]);
 
+  const isMinimizedRef = useRef(isConfirmSheetMinimized);
+  useEffect(() => {
+    isMinimizedRef.current = isConfirmSheetMinimized;
+  }, [isConfirmSheetMinimized]);
+
+  const toggleConfirmSheet = (minimize: boolean) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setIsConfirmSheetMinimized(minimize);
+  };
+
+  const panResponder = useMemo(() => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: (_, gestureState) => {
+      return Math.abs(gestureState.dy) > 5;
+    },
+    onPanResponderRelease: (evt, gestureState) => {
+      if (Math.abs(gestureState.dy) < 5 && Math.abs(gestureState.dx) < 5) {
+        // Tap
+        toggleConfirmSheet(!isMinimizedRef.current);
+      } else if (gestureState.dy > 20) {
+        // Swipe down -> minimize
+        toggleConfirmSheet(true);
+      } else if (gestureState.dy < -20) {
+        // Swipe up -> maximize
+        toggleConfirmSheet(false);
+      }
+    }
+  }), []);
+
   const handleSuccessReset = () => {
     setPaymentProcessState('idle');
     setTripState('idle');
@@ -154,12 +188,26 @@ export default function Home() {
     setSimulatedETA(null);
   };
 
+  const recordTrip = () => {
+    if (selectedRoute && selectedStop) {
+      addRecord({
+        id: Math.random().toString(36).substr(2, 9),
+        date: new Date().toISOString(),
+        route: selectedRoute.name,
+        destination: selectedStop.name,
+        fare: estimatedFare,
+        paymentMethod: paymentMethod,
+      });
+    }
+  };
+
   const executePayment = () => {
     if (paymentMethod === 'cash') {
       setPaymentProcessState('cash_verification');
     } else {
       setPaymentProcessState('processing');
       setTimeout(() => {
+        recordTrip();
         setPaymentProcessState('success');
         setTimeout(handleSuccessReset, 1500);
       }, 2000);
@@ -192,6 +240,7 @@ export default function Home() {
   const handleCashConfirmed = () => {
     setPaymentProcessState('processing');
     setTimeout(() => {
+      recordTrip();
       setPaymentProcessState('success');
       setTimeout(handleSuccessReset, 1500);
     }, 1000);
@@ -615,19 +664,12 @@ export default function Home() {
       {tripState === 'confirming' && selectedRoute && selectedStop && (
         <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[32px] shadow-[0_-8px_40px_rgba(0,0,0,0.1)] pt-4 pb-10 px-6">
           {/* Grabber Toggle */}
-          <TouchableOpacity 
-            className="w-full items-center justify-center py-2 -mt-2 mb-4"
-            activeOpacity={0.6}
-            onPress={() => setIsConfirmSheetMinimized(!isConfirmSheetMinimized)}
+          <View 
+            className="w-full items-center justify-center py-4 -mt-4 mb-2"
+            {...panResponder.panHandlers}
           >
             <View className="w-12 h-1.5 bg-gray-200 rounded-full" />
-            <SymbolView 
-              name={isConfirmSheetMinimized ? "chevron.up" : "chevron.down"} 
-              size={14} 
-              tintColor="#d1d5db" 
-              style={{ marginTop: 4 }} 
-            />
-          </TouchableOpacity>
+          </View>
 
           {/* Header */}
           <View className={`flex-row items-start justify-between ${isConfirmSheetMinimized ? '' : 'mb-8'}`}>
@@ -649,46 +691,37 @@ export default function Home() {
           {!isConfirmSheetMinimized && (
             <>
               {/* Payment Method */}
-              <View className="mb-8">
+              <View className="mb-6">
                 <Text className="text-[15px] font-bold text-gray-900 mb-3">Payment Method</Text>
-            <View className="flex-row space-x-3">
-              {/* Wallet */}
-              <TouchableOpacity 
-                onPress={() => setPaymentMethod('wallet')}
-                className={`flex-1 rounded-2xl py-3 px-1 items-center border ${paymentMethod === 'wallet' ? 'bg-[#f0f9ff] border-blue-500' : 'bg-white border-gray-200'}`}
-              >
-                <SymbolView name="creditcard.fill" size={24} tintColor={paymentMethod === 'wallet' ? "#3b82f6" : "#9ca3af"} style={{ marginBottom: 4 }} />
-                <Text className={`text-[13px] font-bold mt-2 ${paymentMethod === 'wallet' ? 'text-gray-900' : 'text-gray-500'}`}>Wallet</Text>
-              </TouchableOpacity>
-
-              {/* MoMo */}
-              <TouchableOpacity 
-                onPress={() => setPaymentMethod('momo')}
-                className={`flex-1 rounded-2xl py-3 px-1 items-center border ${paymentMethod === 'momo' ? 'bg-[#f0f9ff] border-blue-500' : 'bg-white border-gray-200'}`}
-              >
-                <SymbolView name="iphone" size={24} tintColor={paymentMethod === 'momo' ? "#3b82f6" : "#9ca3af"} style={{ marginBottom: 4 }} />
-                <Text className={`text-[13px] font-bold mt-2 ${paymentMethod === 'momo' ? 'text-gray-900' : 'text-gray-500'}`}>MoMo</Text>
-              </TouchableOpacity>
-
-              {/* Cash */}
-              <TouchableOpacity 
-                onPress={() => setPaymentMethod('cash')}
-                className={`flex-1 rounded-2xl py-3 px-1 items-center border ${paymentMethod === 'cash' ? 'bg-[#f0f9ff] border-blue-500' : 'bg-white border-gray-200'}`}
-              >
-                <SymbolView name="banknote" size={24} tintColor={paymentMethod === 'cash' ? "#3b82f6" : "#9ca3af"} style={{ marginBottom: 4 }} />
-                <Text className={`text-[13px] font-bold mt-2 ${paymentMethod === 'cash' ? 'text-gray-900' : 'text-gray-500'}`}>Cash</Text>
-              </TouchableOpacity>
-
-              {/* QR */}
-              <TouchableOpacity 
-                onPress={() => setPaymentMethod('qr')}
-                className={`flex-1 rounded-2xl py-3 px-1 items-center border ${paymentMethod === 'qr' ? 'bg-[#f0f9ff] border-blue-500' : 'bg-white border-gray-200'}`}
-              >
-                <SymbolView name="qrcode" size={24} tintColor={paymentMethod === 'qr' ? "#3b82f6" : "#9ca3af"} style={{ marginBottom: 4 }} />
-                <Text className={`text-[13px] font-bold mt-2 ${paymentMethod === 'qr' ? 'text-gray-900' : 'text-gray-500'}`}>QR Code</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
+                <View className="flex-col gap-2">
+                  {[
+                    { id: 'wallet', label: 'Smart Wallet', icon: 'creditcard.fill', color: '#3b82f6', subtitle: `GHC ${balance.toFixed(2)} available` },
+                    { id: 'momo', label: 'Mobile Money', icon: 'iphone', color: '#f59e0b', subtitle: 'MTN, Telecel, AT' },
+                    { id: 'cash', label: 'Cash Payment', icon: 'banknote', color: '#22c55e', subtitle: 'Pay conductor directly' },
+                    { id: 'qr', label: 'Scan QR Code', icon: 'qrcode', color: '#8b5cf6', subtitle: 'Scan conductor device' },
+                  ].map((method) => (
+                    <TouchableOpacity
+                      key={method.id}
+                      onPress={() => setPaymentMethod(method.id as any)}
+                      className={`flex-row items-center p-3 rounded-2xl border ${paymentMethod === method.id ? 'bg-[#f0f9ff] border-blue-500' : 'bg-white border-gray-100'}`}
+                      activeOpacity={0.7}
+                    >
+                      <View className="w-10 h-10 rounded-xl bg-gray-50 items-center justify-center mr-3 border border-gray-100">
+                        <SymbolView name={method.icon as any} size={20} tintColor={method.color} />
+                      </View>
+                      <View className="flex-1">
+                        <Text className={`text-[15px] font-bold ${paymentMethod === method.id ? 'text-gray-900' : 'text-gray-700'}`}>{method.label}</Text>
+                        <Text className="text-[12px] text-gray-400 font-medium mt-0.5">{method.subtitle}</Text>
+                      </View>
+                      <View className={`w-6 h-6 rounded-full border items-center justify-center ${paymentMethod === method.id ? 'bg-blue-500 border-blue-500 shadow-sm shadow-blue-500/30' : 'border-gray-200'}`}>
+                        {paymentMethod === method.id && (
+                          <SymbolView name="checkmark" size={12} tintColor="#ffffff" weight="bold" />
+                        )}
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
 
           {/* Actions */}
           <View className="flex-row gap-3">
