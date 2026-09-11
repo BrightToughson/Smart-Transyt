@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, TextInput, TouchableOpacity, SafeAreaView, Platform, Animated, PanResponder, Dimensions, ScrollView } from 'react-native';
+import { KeyboardAvoidingView, View, Text, TextInput, TouchableOpacity, SafeAreaView, Platform, Animated, PanResponder, Dimensions, ScrollView, Image } from 'react-native';
+import { useUser } from '@clerk/expo';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import MapView, { Marker, Polyline, Callout } from '@/components/Map';
 import { useLocationStore, useWalletStore } from '@/store';
 import { useRouter, useNavigation } from 'expo-router';
@@ -9,6 +11,9 @@ import { route1 } from '../../constants/mockRoutes';
 import { ROUTES, BUSES } from '../../constants/mockData';
 
 export default function Home() {
+  const { user } = useUser();
+  const [permission, requestPermission] = useCameraPermissions();
+  const [isScanningQR, setIsScanningQR] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [tripState, setTripState] = useState<'idle' | 'selecting_stop' | 'confirming' | 'active'>('idle');
   const [selectedRoute, setSelectedRoute] = useState<any>(null);
@@ -17,7 +22,13 @@ export default function Home() {
   const [directionLabel, setDirectionLabel] = useState<string>('');
   const [selectedBus, setSelectedBus] = useState<any>(null);
   const [isSearching, setIsSearching] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'momo' | 'cash'>('wallet');
+  const [isConfirmSheetMinimized, setIsConfirmSheetMinimized] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'momo' | 'cash' | 'qr'>('wallet');
+  const [hasPaid, setHasPaid] = useState(false);
+  const [simulatedETA, setSimulatedETA] = useState<number | null>(null);
+  const [showPaymentPrompt, setShowPaymentPrompt] = useState(false);
+  const [paymentProcessState, setPaymentProcessState] = useState<'idle' | 'cash_verification' | 'processing' | 'success'>('idle');
+  const [walkingRoute, setWalkingRoute] = useState<{latitude: number, longitude: number}[]>([]);
   const [userLocation, setUserLocation] = useState({ latitude: 5.744306, longitude: -0.177075 }); // Exact Oyarifa line point
   const [weather, setWeather] = useState<{ temp: number, icon: string } | null>(null);
   const { setDestination, destination } = useLocationStore();
@@ -25,46 +36,7 @@ export default function Home() {
   const router = useRouter();
   const navigation = useNavigation();
 
-  // Draggable Weather Pill State
-  const pan = useRef(new Animated.ValueXY()).current;
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        pan.setOffset({
-          x: (pan.x as any)._value,
-          y: (pan.y as any)._value
-        });
-        pan.setValue({ x: 0, y: 0 });
-      },
-      onPanResponderMove: (e, gestureState) => {
-        const { width, height } = Dimensions.get('window');
-        
-        // Calculate safe boundaries based on pill origin (top-14, right-4)
-        const minX = -width + 100; // Prevent dragging off left edge
-        const maxX = 0; // Prevent dragging off right edge
-        const minY = 0; // Strictly prevent dragging higher than the initial safe top-14 position
-        const maxY = height - 250; // Prevent dragging into bottom search bar area
-
-        const offsetX = (pan.x as any)._offset || 0;
-        const offsetY = (pan.y as any)._offset || 0;
-
-        let absX = offsetX + gestureState.dx;
-        let absY = offsetY + gestureState.dy;
-
-        if (absX < minX) absX = minX;
-        if (absX > maxX) absX = maxX;
-        if (absY < minY) absY = minY;
-        if (absY > maxY) absY = maxY;
-
-        pan.setValue({ x: absX - offsetX, y: absY - offsetY });
-      },
-      onPanResponderRelease: () => {
-        pan.flattenOffset();
-      }
-    })
-  ).current;
+  const mapRef = useRef<any>(null);
 
   // Use BUSES from mockData
   const [liveBuses, setLiveBuses] = useState(BUSES);
@@ -118,11 +90,111 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
+  // Simulation Timer
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    if (tripState === 'active' && simulatedETA !== null && simulatedETA > 0) {
+      timer = setInterval(() => {
+        setSimulatedETA((prev) => {
+          if (prev === null) return null;
+          const next = prev - 1;
+          if (next === 5 && !hasPaid) {
+            setShowPaymentPrompt(true);
+          }
+          if (next <= 0) {
+            clearInterval(timer);
+            return 0;
+          }
+          return next;
+        });
+      }, 1000); // 1 real second = 1 sim minute
+    }
+    return () => clearInterval(timer);
+  }, [tripState, simulatedETA, hasPaid]);
+
   const initialRegion = {
     latitude: userLocation.latitude,
     longitude: userLocation.longitude,
     latitudeDelta: 0.0922,
     longitudeDelta: 0.0421,
+  };
+
+  // Fetch actual walking route from OSRM
+  useEffect(() => {
+    if (boardingStop && userLocation) {
+      const fetchWalkingRoute = async () => {
+        try {
+          const res = await fetch(`https://router.project-osrm.org/route/v1/foot/${userLocation.longitude},${userLocation.latitude};${boardingStop.coords.longitude},${boardingStop.coords.latitude}?geometries=geojson`);
+          const data = await res.json();
+          if (data.routes && data.routes.length > 0) {
+            const coords = data.routes[0].geometry.coordinates.map((coord: any) => ({
+              latitude: coord[1],
+              longitude: coord[0]
+            }));
+            setWalkingRoute(coords);
+          }
+        } catch (e) {
+          console.error("Failed to fetch walking route:", e);
+        }
+      };
+      fetchWalkingRoute();
+    } else {
+      setWalkingRoute([]);
+    }
+  }, [boardingStop, userLocation]);
+
+  const handleSuccessReset = () => {
+    setPaymentProcessState('idle');
+    setTripState('idle');
+    setSelectedRoute(null);
+    setSelectedStop(null);
+    setBoardingStop(null);
+    setSelectedBus(null);
+    setHasPaid(false);
+    setSimulatedETA(null);
+  };
+
+  const executePayment = () => {
+    if (paymentMethod === 'cash') {
+      setPaymentProcessState('cash_verification');
+    } else {
+      setPaymentProcessState('processing');
+      setTimeout(() => {
+        setPaymentProcessState('success');
+        setTimeout(handleSuccessReset, 1500);
+      }, 2000);
+    }
+  };
+
+  const handleProcessPayment = async () => {
+    setShowPaymentPrompt(false);
+    
+    if (paymentMethod === 'qr') {
+      if (!permission?.granted) {
+        const res = await requestPermission();
+        if (!res.granted) {
+          // If they refuse, just process payment without QR
+          executePayment();
+          return;
+        }
+      }
+      setIsScanningQR(true);
+    } else {
+      executePayment();
+    }
+  };
+
+  const handleBarcodeScanned = () => {
+    setIsScanningQR(false);
+    executePayment();
+  };
+
+  const handleCashConfirmed = () => {
+    setPaymentProcessState('processing');
+    setTimeout(() => {
+      setPaymentProcessState('success');
+      setTimeout(handleSuccessReset, 1500);
+    }, 1000);
   };
 
   // Simple Haversine distance calculation in km
@@ -148,6 +220,8 @@ export default function Home() {
   let estimatedFare = 0.50 + (distanceKm * 0.482); 
   estimatedFare = Math.round(estimatedFare * 10) / 10; // Clean decimal
   const estimatedMins = Math.max(2, Math.round(distanceKm * 4)); // ~4 mins per km
+  
+  const progressPercentage = simulatedETA !== null ? Math.max(0, Math.min(100, 100 - (simulatedETA / estimatedMins) * 100)) : 0;
 
   // Centered Path Geometry to ensure single thick line over the road
   const centeredPathGeometry = useMemo(() => {
@@ -172,9 +246,12 @@ export default function Home() {
   return (
     <View className="flex-1">
       <MapView
+        ref={mapRef}
         style={{ flex: 1 }}
         region={initialRegion}
         showsUserLocation={true}
+        showsCompass={false}
+        showsMyLocationButton={false}
       >
         
         {liveBuses.filter(b => !selectedRoute || b.routeId === selectedRoute.id).map(bus => {
@@ -253,9 +330,9 @@ export default function Home() {
             />
             
             {/* Walking Path to Boarding Stop */}
-            {boardingStop && (
+            {boardingStop && calculateDistance(userLocation.latitude, userLocation.longitude, boardingStop.coords.latitude, boardingStop.coords.longitude) < 0.5 && (
               <Polyline
-                coordinates={[
+                coordinates={walkingRoute.length > 0 ? walkingRoute : [
                   userLocation,
                   boardingStop.coords
                 ]}
@@ -271,27 +348,73 @@ export default function Home() {
       {/* Floating Top Indicators (Wallet & Weather) */}
       {tripState === 'idle' && !isSearching && (
         <>
-          <View className="absolute top-14 left-4 shadow-sm shadow-black/10">
+          <View className="absolute top-14 left-4 flex-row items-center">
             <TouchableOpacity 
-              className="bg-white/70 rounded-xl px-3 py-1.5 flex-row items-center border border-white/50 backdrop-blur-lg"
+              className="bg-white/90 rounded-2xl px-4 h-11 flex-row items-center border border-white/50 backdrop-blur-xl shadow-sm shadow-black/10"
               onPress={() => router.push('/(drawer)/wallet')}
+              activeOpacity={0.8}
             >
-              <SymbolView name="creditcard.fill" size={14} tintColor="#1A4996" style={{ marginRight: 6 }} />
+              <SymbolView name="creditcard.fill" size={15} tintColor="#1A4996" style={{ marginRight: 8 }} />
               <Text className="text-[15px] font-bold text-[#1A4996]">GHC {balance.toFixed(2)}</Text>
             </TouchableOpacity>
           </View>
 
-          <Animated.View 
-            {...panResponder.panHandlers}
-            style={{ transform: pan.getTranslateTransform() }}
-            className="absolute top-14 right-4 shadow-sm shadow-black/10 z-50"
-          >
+          <View className="absolute top-14 right-4 shadow-sm shadow-black/10 z-50">
             <View className="bg-white/70 rounded-xl px-2.5 py-1.5 flex-row items-center border border-white/50 backdrop-blur-lg">
               <Text className="text-[15px] mr-1">{weather?.icon || '☁️'}</Text>
               <Text className="text-[15px] font-semibold text-gray-800">{weather?.temp ?? 28}°</Text>
             </View>
-          </Animated.View>
+          </View>
+
+          {/* Edge Drawer Tab (Dark Arrow) */}
+          <TouchableOpacity
+            className="absolute left-0 top-1/2 -mt-10 bg-black/60 rounded-r-[20px] w-8 h-20 items-center justify-center border-y border-r border-white/10 backdrop-blur-md shadow-lg"
+            onPress={() => (navigation as any).openDrawer()}
+            activeOpacity={0.8}
+            style={{ zIndex: 100 }}
+          >
+            <SymbolView name="chevron.right" size={20} tintColor="#ffffff" weight="bold" />
+          </TouchableOpacity>
         </>
+      )}
+
+      {/* Map Action Buttons (Compass & Location) */}
+      {!isSearching && (
+        <View className="absolute right-4 top-[120px] shadow-[0_8px_30px_rgba(0,0,0,0.12)] z-40">
+          <View className="bg-white/90 rounded-2xl border border-white/80 backdrop-blur-xl overflow-hidden shadow-sm">
+            <TouchableOpacity 
+              className="w-12 h-12 border-b border-gray-200/50 items-center justify-center bg-white/50"
+              onPress={() => {
+                if (mapRef.current) {
+                  mapRef.current.animateCamera({ heading: 0, pitch: 0 }, { duration: 500 });
+                }
+              }}
+              activeOpacity={0.7}
+            >
+              <SymbolView name="safari.fill" size={22} tintColor="#3b82f6" />
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              className="w-12 h-12 items-center justify-center bg-white/50"
+              onPress={() => {
+                if (userLocation && mapRef.current) {
+                  mapRef.current.animateCamera({
+                    center: {
+                      latitude: userLocation.latitude,
+                      longitude: userLocation.longitude,
+                    },
+                    heading: 0,
+                    pitch: 0,
+                    zoom: 16
+                  }, { duration: 1000 });
+                }
+              }}
+              activeOpacity={0.7}
+            >
+              <SymbolView name="location.fill" size={20} tintColor="#3b82f6" />
+            </TouchableOpacity>
+          </View>
+        </View>
       )}
 
       {/* Top Banner for Route Name (Active / Confirming) */}
@@ -299,7 +422,7 @@ export default function Home() {
         <View className="absolute top-14 left-0 right-0 z-50 items-center">
           <View className="bg-white/95 backdrop-blur-xl rounded-full px-5 py-2.5 shadow-[0_4px_20px_rgba(0,0,0,0.15)] border border-white flex-row items-center justify-center">
             <SymbolView name="arrow.triangle.swap" size={15} tintColor="#1A4996" style={{ marginRight: 8 }} />
-            <Text className="text-[16px] font-black text-gray-900 tracking-tight">{selectedRoute.name}</Text>
+            <Text className="text-[16px] font-medium text-gray-900 tracking-tight">{selectedRoute.name}</Text>
           </View>
         </View>
       )}
@@ -317,9 +440,13 @@ export default function Home() {
             
             <TouchableOpacity 
               className="w-10 h-10 bg-gray-100 rounded-full items-center justify-center overflow-hidden ml-3"
-              onPress={() => (navigation as any).openDrawer()}
+              onPress={() => router.push('/(drawer)/profile')}
             >
-              <SymbolView name="person.fill" size={20} tintColor="#6b7280" />
+              {user?.imageUrl ? (
+                <Image source={{ uri: user.imageUrl }} className="w-full h-full" />
+              ) : (
+                <SymbolView name="person.fill" size={20} tintColor="#6b7280" />
+              )}
             </TouchableOpacity>
           </TouchableOpacity>
         </View>
@@ -327,7 +454,10 @@ export default function Home() {
 
       {/* Full Screen Search Sheet */}
       {isSearching && (
-        <View className="absolute top-12 bottom-0 left-0 right-0 bg-[#1c1c1e] rounded-t-[32px] shadow-2xl overflow-hidden">
+        <KeyboardAvoidingView 
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          className="absolute top-12 bottom-0 left-0 right-0 bg-[#1c1c1e] rounded-t-[32px] shadow-2xl overflow-hidden"
+        >
           {/* Grab handle */}
           <View className="w-10 h-1.5 bg-gray-500 rounded-full self-center mt-3 mb-4" />
           
@@ -368,16 +498,19 @@ export default function Home() {
               <Text className="text-gray-400 mb-4">Select your drop-off stop</Text>
               
               <ScrollView 
-                className="bg-[#2c2c2e] rounded-xl flex-1"
-                contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, paddingBottom: 100 }}
+                className="flex-1 mt-2"
+                contentContainerStyle={{ paddingHorizontal: 4, paddingVertical: 8, paddingBottom: 100 }}
                 showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
               >
                 {selectedRoute.stops
                   .filter((stop: any) => stop.name.toLowerCase().includes(searchQuery.toLowerCase()))
                   .map((stop: any, index: number, array: any[]) => (
                   <TouchableOpacity 
                     key={stop.id}
-                    className={`py-4 flex-row items-center ${index !== array.length - 1 ? 'border-b border-[#3a3a3c]' : ''}`}
+                    className="bg-[#2c2c2e] rounded-2xl p-4 mb-3 flex-row items-center border border-[#3a3a3c] shadow-lg shadow-black/20"
+                    activeOpacity={0.7}
                     onPress={() => {
                       const destIndex = selectedRoute.stops.findIndex((s: any) => s.id === stop.id);
                       setSelectedStop({ ...stop, stopIndex: destIndex });
@@ -408,13 +541,14 @@ export default function Home() {
 
                       const bus = liveBuses.find((b: any) => b.routeId === selectedRoute.id);
                       setSelectedBus(bus);
+                      setIsConfirmSheetMinimized(false);
                       setTripState('confirming');
                     }}
                   >
-                    <View className="w-8 h-8 bg-gray-700 rounded-full items-center justify-center mr-3">
-                      <SymbolView name="location.fill" size={14} tintColor="#a1a1aa" />
+                    <View className="w-10 h-10 bg-gray-700/50 rounded-full items-center justify-center mr-4 border border-gray-600">
+                      <SymbolView name="mappin.and.ellipse" size={18} tintColor="#d1d5db" />
                     </View>
-                    <Text className="text-white text-[16px] font-medium">{stop.name}</Text>
+                    <Text className="text-white text-[16px] font-semibold flex-1">{stop.name}</Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
@@ -422,45 +556,81 @@ export default function Home() {
           ) : (
             <View className="px-4 flex-1">
               <Text className="text-white font-bold text-lg mb-3">Available Bus Routes</Text>
-              <View className="bg-[#2c2c2e] rounded-xl px-4 py-2">
+              <ScrollView 
+                className="flex-1"
+                contentContainerStyle={{ paddingHorizontal: 4, paddingVertical: 8, paddingBottom: 100 }}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode="on-drag"
+              >
                 {ROUTES
                   .filter((route) => route.name.toLowerCase().includes(searchQuery.toLowerCase()) || route.stops.some((s: any) => s.name.toLowerCase().includes(searchQuery.toLowerCase())))
-                  .map((route, index, array) => (
-                  <TouchableOpacity 
-                    key={route.id}
-                    className={`py-3 flex-row items-center justify-between ${index !== array.length - 1 ? 'border-b border-[#3a3a3c]' : ''}`}
-                    onPress={() => {
-                      setSelectedRoute(route);
-                      setTripState('selecting_stop');
-                      setSearchQuery(''); // clear query for stops
-                    }}
-                  >
-                    <View className="flex-row items-center flex-1 pr-2">
-                      <View className="w-10 h-10 bg-blue-500/20 rounded-full items-center justify-center mr-3">
-                        <SymbolView name="bus.fill" size={20} tintColor="#3b82f6" />
+                  .map((route, index, array) => {
+                    const parts = route.name.split(' ');
+                    const routeNum = parts[0];
+                    const routeDesc = parts.slice(1).join(' ');
+                    const isNum = /^\d+$/.test(routeNum);
+                    
+                    return (
+                    <TouchableOpacity 
+                      key={route.id}
+                      className="bg-[#2c2c2e] rounded-2xl p-4 mb-3 flex-row items-center justify-between border border-[#3a3a3c] shadow-lg shadow-black/20"
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        setSelectedRoute(route);
+                        setTripState('selecting_stop');
+                        setSearchQuery(''); // clear query for stops
+                      }}
+                    >
+                      <View className="flex-row items-center flex-1 pr-2">
+                        <View className="w-12 h-12 bg-blue-500/10 rounded-2xl items-center justify-center mr-4 border border-blue-500/20">
+                          <SymbolView name="bus.fill" size={24} tintColor="#3b82f6" />
+                        </View>
+                        <View className="flex-1">
+                          <View className="flex-row items-center mb-1">
+                            {isNum ? (
+                              <View className="bg-blue-600 px-2 py-0.5 rounded mr-2">
+                                <Text className="text-white text-[11px] font-black">{routeNum}</Text>
+                              </View>
+                            ) : null}
+                            <Text className="text-white text-[16px] font-bold flex-1" numberOfLines={1}>
+                              {isNum ? routeDesc : route.name}
+                            </Text>
+                          </View>
+                          <Text className="text-gray-400 text-[13px] font-medium">{route.stops.length} Stops • ~45 mins</Text>
+                        </View>
                       </View>
-                      <View className="flex-1">
-                        <Text className="text-white text-[16px] font-semibold mb-1" numberOfLines={1}>{route.name}</Text>
-                        <Text className="text-gray-400 text-[13px]">{route.stops.length} Stops</Text>
+                      <View className="w-8 h-8 bg-[#3a3a3c] rounded-full items-center justify-center">
+                        <SymbolView name="chevron.right" size={14} tintColor="#a1a1aa" />
                       </View>
-                    </View>
-                    <SymbolView name="chevron.right" size={16} tintColor="#4b5563" />
-                  </TouchableOpacity>
-                ))}
-              </View>
+                    </TouchableOpacity>
+                  )})}
+              </ScrollView>
             </View>
           )}
-        </View>
+        </KeyboardAvoidingView>
       )}
 
       {/* Trip Confirmation Bottom Sheet */}
       {tripState === 'confirming' && selectedRoute && selectedStop && (
         <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[32px] shadow-[0_-8px_40px_rgba(0,0,0,0.1)] pt-4 pb-10 px-6">
-          {/* Grabber */}
-          <View className="w-12 h-1.5 bg-gray-200 rounded-full self-center mb-6" />
+          {/* Grabber Toggle */}
+          <TouchableOpacity 
+            className="w-full items-center justify-center py-2 -mt-2 mb-4"
+            activeOpacity={0.6}
+            onPress={() => setIsConfirmSheetMinimized(!isConfirmSheetMinimized)}
+          >
+            <View className="w-12 h-1.5 bg-gray-200 rounded-full" />
+            <SymbolView 
+              name={isConfirmSheetMinimized ? "chevron.up" : "chevron.down"} 
+              size={14} 
+              tintColor="#d1d5db" 
+              style={{ marginTop: 4 }} 
+            />
+          </TouchableOpacity>
 
           {/* Header */}
-          <View className="flex-row items-start justify-between mb-8">
+          <View className={`flex-row items-start justify-between ${isConfirmSheetMinimized ? '' : 'mb-8'}`}>
             <View className="flex-1 pr-4">
               <View className="flex-row items-center mb-2">
                 <Text className="text-[26px] font-extrabold text-gray-900 tracking-tight leading-tight mr-2">{selectedStop.name}</Text>
@@ -476,9 +646,11 @@ export default function Home() {
             </View>
           </View>
 
-          {/* Payment Method */}
-          <View className="mb-8">
-            <Text className="text-[15px] font-bold text-gray-900 mb-3">Payment Method</Text>
+          {!isConfirmSheetMinimized && (
+            <>
+              {/* Payment Method */}
+              <View className="mb-8">
+                <Text className="text-[15px] font-bold text-gray-900 mb-3">Payment Method</Text>
             <View className="flex-row space-x-3">
               {/* Wallet */}
               <TouchableOpacity 
@@ -506,6 +678,15 @@ export default function Home() {
                 <SymbolView name="banknote" size={24} tintColor={paymentMethod === 'cash' ? "#3b82f6" : "#9ca3af"} style={{ marginBottom: 4 }} />
                 <Text className={`text-[13px] font-bold mt-2 ${paymentMethod === 'cash' ? 'text-gray-900' : 'text-gray-500'}`}>Cash</Text>
               </TouchableOpacity>
+
+              {/* QR */}
+              <TouchableOpacity 
+                onPress={() => setPaymentMethod('qr')}
+                className={`flex-1 rounded-2xl py-3 px-1 items-center border ${paymentMethod === 'qr' ? 'bg-[#f0f9ff] border-blue-500' : 'bg-white border-gray-200'}`}
+              >
+                <SymbolView name="qrcode" size={24} tintColor={paymentMethod === 'qr' ? "#3b82f6" : "#9ca3af"} style={{ marginBottom: 4 }} />
+                <Text className={`text-[13px] font-bold mt-2 ${paymentMethod === 'qr' ? 'text-gray-900' : 'text-gray-500'}`}>QR Code</Text>
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -528,12 +709,17 @@ export default function Home() {
               className="flex-1 bg-primary h-[60px] rounded-2xl flex-row items-center justify-center shadow-lg shadow-primary/30"
               onPress={() => {
                 setTripState('active');
+                setHasPaid(false); // Reset payment state for new trip
+                setSimulatedETA(estimatedMins);
+                setShowPaymentPrompt(false);
               }}
             >
-              <Text className="text-white text-[18px] font-bold mr-2">Confirm Ride</Text>
+              <Text className="text-white text-[16px] font-bold mr-2">Confirm Ride</Text>
               <SymbolView name="arrow.right" size={20} tintColor="#ffffff" weight="bold" />
             </TouchableOpacity>
           </View>
+            </>
+          )}
         </View>
       )}
 
@@ -543,7 +729,7 @@ export default function Home() {
           <View className="bg-white rounded-[28px] border border-gray-100 p-6 overflow-hidden">
             {/* Progress Bar */}
             <View className="absolute top-0 left-0 right-0 h-1.5 bg-gray-100">
-              <View className="h-full bg-primary w-1/3 rounded-r-full" />
+              <View className="h-full bg-primary rounded-r-full" style={{ width: `${progressPercentage}%` }} />
             </View>
 
             {/* Header: Bus Info */}
@@ -557,8 +743,8 @@ export default function Home() {
                   <Text className="text-[13px] font-bold text-green-500 tracking-wide uppercase">On Schedule</Text>
                 </View>
               </View>
-              <View className="items-end bg-gray-50 px-3 py-2 rounded-xl border border-gray-100">
-                 <Text className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-0.5">Paid</Text>
+              <View className={`items-end px-3 py-2 rounded-xl border ${hasPaid ? 'bg-green-50 border-green-100' : 'bg-gray-50 border-gray-100'}`}>
+                 <Text className={`text-[10px] font-bold uppercase tracking-wider mb-0.5 ${hasPaid ? 'text-green-600' : 'text-gray-400'}`}>{hasPaid ? 'Paid' : 'Unpaid'}</Text>
                  <Text className="text-[16px] font-black text-gray-900">GHC {estimatedFare.toFixed(2)}</Text>
               </View>
             </View>
@@ -580,25 +766,138 @@ export default function Home() {
               
               <View className="items-end">
                 <Text className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-0.5">Est. Arrival</Text>
-                <Text className="text-[15px] font-extrabold text-gray-900">{estimatedMins} mins</Text>
+                <Text className="text-[15px] font-extrabold text-gray-900">{simulatedETA ?? estimatedMins} mins</Text>
               </View>
             </View>
             
             {/* Action */}
+            <View className="flex-row gap-3">
+              <TouchableOpacity 
+                className={`flex-row items-center justify-center border rounded-2xl ${hasPaid ? 'flex-1 bg-red-50/80 border-red-100 py-4' : 'w-[60px] h-[56px] bg-red-50/80 border-red-100'}`}
+                onPress={() => {
+                  setTripState('idle');
+                  setSelectedRoute(null);
+                  setSelectedStop(null);
+                  setBoardingStop(null);
+                  setSelectedBus(null);
+                  setHasPaid(false);
+                }}
+              >
+                <SymbolView name="xmark" size={20} tintColor="#ef4444" style={hasPaid ? {marginRight: 6} : {}} />
+                {hasPaid && <Text className="text-red-500 font-bold text-[16px]">Cancel Trip</Text>}
+              </TouchableOpacity>
+
+              {!hasPaid && (
+                <TouchableOpacity 
+                  className="flex-1 bg-primary h-[56px] rounded-2xl flex-row items-center justify-center shadow-lg shadow-primary/30"
+                  onPress={handleProcessPayment}
+                >
+                  <SymbolView name="creditcard.fill" size={18} tintColor="#ffffff" style={{ marginRight: 8 }} />
+                  <Text className="text-white font-bold text-[16px]">Pay Fare</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* 5-Min Payment Prompt Overlay */}
+      {showPaymentPrompt && (
+        <View className="absolute inset-0 bg-black/50 z-[100] items-center justify-center p-5">
+          <View className="bg-white rounded-[28px] w-full p-6 items-center shadow-2xl">
+            <View className="w-16 h-16 bg-blue-50 rounded-full items-center justify-center mb-4">
+              <SymbolView name="bell.fill" size={30} tintColor="#3b82f6" />
+            </View>
+            <Text className="text-[22px] font-black text-gray-900 mb-2">Almost There!</Text>
+            <Text className="text-[15px] text-gray-500 text-center mb-6">You are 5 minutes away from {selectedStop?.name}. Please confirm your {paymentMethod} payment of GHC {estimatedFare.toFixed(2)} before alighting.</Text>
+            
             <TouchableOpacity 
-              className="bg-red-50/80 py-4 rounded-2xl items-center justify-center border border-red-100 flex-row"
-              onPress={() => {
-                setTripState('idle');
-                setSelectedRoute(null);
-                setSelectedStop(null);
-                setBoardingStop(null);
-                setSelectedBus(null);
-              }}
+              className="bg-primary w-full h-[56px] rounded-2xl flex-row items-center justify-center shadow-lg shadow-primary/30"
+              onPress={handleProcessPayment}
             >
-              <SymbolView name="xmark.circle.fill" size={18} tintColor="#ef4444" style={{ marginRight: 6 }} />
-              <Text className="text-red-500 font-bold text-[16px]">Cancel Trip</Text>
+              <SymbolView name="checkmark.shield.fill" size={20} tintColor="#ffffff" style={{ marginRight: 8 }} />
+              <Text className="text-white font-bold text-[18px]">Pay Now</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      )}
+      {/* Payment Processing Overlay */}
+      {paymentProcessState !== 'idle' && (
+        <View className="absolute inset-0 bg-white/95 z-[200] items-center justify-center p-6 backdrop-blur-xl">
+          {paymentProcessState === 'cash_verification' && (
+            <View className="items-center w-full">
+              <View className="w-20 h-20 bg-green-50 rounded-full items-center justify-center mb-6 border-4 border-green-100">
+                <SymbolView name="banknote" size={36} tintColor="#22c55e" />
+              </View>
+              <Text className="text-[28px] font-black text-gray-900 mb-3 text-center">Hand Cash to Conductor</Text>
+              <Text className="text-[17px] text-gray-500 text-center mb-10 px-4">Please hand exactly GHC {estimatedFare.toFixed(2)} to the bus conductor. They will verify your payment.</Text>
+              
+              <TouchableOpacity 
+                className="bg-green-500 w-full h-[60px] rounded-2xl flex-row items-center justify-center shadow-xl shadow-green-500/30 mb-4"
+                onPress={handleCashConfirmed}
+              >
+                <SymbolView name="checkmark.seal.fill" size={22} tintColor="#ffffff" style={{ marginRight: 10 }} />
+                <Text className="text-white font-bold text-[18px]">I Have Paid the Cash</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                className="py-4"
+                onPress={() => setPaymentProcessState('idle')}
+              >
+                <Text className="text-gray-400 font-bold text-[16px]">Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {paymentProcessState === 'processing' && (
+            <View className="items-center">
+              <View className="w-20 h-20 bg-blue-50 rounded-full items-center justify-center mb-6 border-4 border-blue-100">
+                <SymbolView name="arrow.triangle.2.circlepath" size={36} tintColor="#3b82f6" />
+              </View>
+              <Text className="text-[24px] font-black text-gray-900 mb-2">Processing Payment...</Text>
+              <Text className="text-[15px] text-gray-500">Verifying {paymentMethod} transaction</Text>
+            </View>
+          )}
+
+          {paymentProcessState === 'success' && (
+            <View className="items-center">
+              <View className="w-24 h-24 bg-green-500 rounded-full items-center justify-center mb-6 shadow-2xl shadow-green-500/40">
+                <SymbolView name="checkmark" size={48} tintColor="#ffffff" weight="bold" />
+              </View>
+              <Text className="text-[28px] font-black text-gray-900 mb-2">Payment Successful!</Text>
+              <Text className="text-[16px] text-green-600 font-bold">GHC {estimatedFare.toFixed(2)} Paid via {paymentMethod === 'cash' ? 'Cash' : paymentMethod === 'wallet' ? 'Wallet' : 'MoMo'}</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* QR Scanner Overlay */}
+      {isScanningQR && (
+        <View className="absolute inset-0 z-[300] bg-black">
+          <CameraView 
+            style={{ flex: 1 }}
+            facing="back"
+            onBarcodeScanned={handleBarcodeScanned}
+          >
+            <SafeAreaView className="flex-1 bg-black/40">
+              <View className="flex-1 items-center justify-center p-5">
+                <View className="w-64 h-64 border-4 border-primary rounded-3xl items-center justify-center bg-black/20">
+                  <SymbolView name="qrcode.viewfinder" size={48} tintColor="#ffffff" />
+                </View>
+                <Text className="text-white text-center mt-6 text-[20px] font-black tracking-tight">Scan Conductor's QR Code</Text>
+                <Text className="text-gray-300 text-center mt-2 px-6">Point your camera at the QR code to process your fare payment.</Text>
+              </View>
+              
+              <View className="p-8 pb-12">
+                <TouchableOpacity 
+                  className="w-full bg-white/20 p-4 rounded-2xl border border-white/30 backdrop-blur-md items-center justify-center"
+                  onPress={() => setIsScanningQR(false)}
+                >
+                  <Text className="text-white font-bold text-[18px]">Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </SafeAreaView>
+          </CameraView>
         </View>
       )}
     </View>
