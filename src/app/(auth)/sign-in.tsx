@@ -3,6 +3,7 @@ import { View, Text, TextInput, TouchableOpacity, Alert, Image, KeyboardAvoiding
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSignIn, useSignUp, useOAuth, useClerk } from '@clerk/expo';
 import { useRouter } from 'expo-router';
+import { SymbolView } from 'expo-symbols';
 import * as WebBrowser from 'expo-web-browser';
 import * as Linking from 'expo-linking';
 
@@ -34,6 +35,7 @@ export default function SignIn() {
   
   // UI State
   const [focusedInput, setFocusedInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [oauthMissingFields, setOauthMissingFields] = useState(false);
   const [oauthUsername, setOauthUsername] = useState('');
@@ -191,7 +193,11 @@ export default function SignIn() {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         className="flex-1"
       >
-        <ScrollView contentContainerStyle={{ flexGrow: 1, paddingHorizontal: 24, paddingTop: 60, paddingBottom: 24 }} showsVerticalScrollIndicator={false}>
+        <ScrollView 
+          contentContainerStyle={{ flexGrow: 1, paddingHorizontal: 24, paddingTop: 60, paddingBottom: 24 }} 
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
           
           {oauthMissingFields ? (
             <View className="items-center mt-10">
@@ -273,41 +279,54 @@ export default function SignIn() {
 
               <View className="space-y-4">
                 <View>
-                  <TextInput
-                    autoCapitalize="none"
-                    value={identifier}
-                    placeholder="Email or Username"
-                    placeholderTextColor="#9ca3af"
-                    onFocus={() => setFocusedInput('identifier')}
-                    onBlur={() => setFocusedInput('')}
-                    onChangeText={setIdentifier}
-                    className={`bg-white p-4 rounded-xl text-base border ${focusedInput === 'identifier' ? 'border-primary' : 'border-gray-200'}`}
-                  />
+                  <Text className="text-gray-900 font-bold text-[14px] mb-1 ml-1">Email or Username</Text>
+                  <View className={`flex-row items-center bg-white px-4 rounded-2xl border h-[56px] ${focusedInput === 'identifier' ? 'border-primary' : 'border-gray-200'}`}>
+                    <SymbolView name="person.fill" size={20} tintColor="#9ca3af" style={{ marginRight: 12 }} />
+                    <TextInput
+                      autoCapitalize="none"
+                      value={identifier}
+                      placeholder="Enter your email or username"
+                      placeholderTextColor="#9ca3af"
+                      onFocus={() => setFocusedInput('identifier')}
+                      onBlur={() => setFocusedInput('')}
+                      onChangeText={setIdentifier}
+                      className="flex-1 text-[16px] text-gray-900 h-full"
+                    />
+                  </View>
                 </View>
 
                 <View>
-                  <TextInput
-                    value={password}
-                    placeholder="Password"
-                    placeholderTextColor="#9ca3af"
-                    secureTextEntry={true}
-                    onFocus={() => setFocusedInput('password')}
-                    onBlur={() => setFocusedInput('')}
-                    onChangeText={setPassword}
-                    className={`bg-white p-4 rounded-xl text-base border ${focusedInput === 'password' ? 'border-primary' : 'border-gray-200'}`}
-                  />
+                  <Text className="text-gray-900 font-bold text-[14px] mb-1 ml-1">Password</Text>
+                  <View className={`flex-row items-center bg-white px-4 rounded-2xl border h-[56px] ${focusedInput === 'password' ? 'border-primary' : 'border-gray-200'}`}>
+                    <SymbolView name="lock.fill" size={20} tintColor="#9ca3af" style={{ marginRight: 12 }} />
+                    <TextInput
+                      value={password}
+                      placeholder="Enter your password"
+                      placeholderTextColor="#9ca3af"
+                      secureTextEntry={!showPassword}
+                      onFocus={() => setFocusedInput('password')}
+                      onBlur={() => setFocusedInput('')}
+                      onChangeText={setPassword}
+                      className="flex-1 text-[16px] text-gray-900 h-full"
+                    />
+                    <TouchableOpacity onPress={() => setShowPassword(!showPassword)} className="p-2">
+                      <SymbolView name={showPassword ? "eye.slash.fill" : "eye.fill"} size={20} tintColor="#9ca3af" />
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
-                <TouchableOpacity className="self-end mt-1">
+                <TouchableOpacity className="self-end mt-1" onPress={() => router.push('/(auth)/forgot-password')}>
                   <Text className="text-primary font-medium text-sm">Forgot Password?</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  className={`bg-primary p-4 rounded-xl items-center mt-2 ${isLoading ? 'opacity-70' : ''}`}
+                  className={`bg-primary p-4 rounded-xl items-center mt-2 ${(!isLoaded || isLoading) ? 'opacity-50' : ''}`}
                   onPress={onSignInPress}
-                  disabled={isLoading}
+                  disabled={!isLoaded || isLoading}
                 >
-                  <Text className="text-white text-base font-semibold">{isLoading ? 'Signing In...' : 'Sign In'}</Text>
+                  <Text className="text-white text-base font-semibold">
+                    {!isLoaded ? 'Loading...' : isLoading ? 'Signing In...' : 'Sign In'}
+                  </Text>
                 </TouchableOpacity>
               </View>
 

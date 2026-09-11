@@ -1,18 +1,20 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { View, Text, TextInput, TouchableOpacity, SafeAreaView, Platform, Animated, PanResponder, Dimensions, ScrollView } from 'react-native';
 import MapView, { Marker, Polyline, Callout } from '@/components/Map';
 import { useLocationStore, useWalletStore } from '@/store';
 import { useRouter, useNavigation } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import * as Location from 'expo-location';
-import { route1 } from './mockRoutes';
-import { ROUTES, BUSES } from './mockData';
+import { route1 } from '../../constants/mockRoutes';
+import { ROUTES, BUSES } from '../../constants/mockData';
 
 export default function Home() {
   const [searchQuery, setSearchQuery] = useState('');
   const [tripState, setTripState] = useState<'idle' | 'selecting_stop' | 'confirming' | 'active'>('idle');
   const [selectedRoute, setSelectedRoute] = useState<any>(null);
   const [selectedStop, setSelectedStop] = useState<any>(null);
+  const [boardingStop, setBoardingStop] = useState<any>(null);
+  const [directionLabel, setDirectionLabel] = useState<string>('');
   const [selectedBus, setSelectedBus] = useState<any>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'wallet' | 'momo' | 'cash'>('wallet');
@@ -147,6 +149,26 @@ export default function Home() {
   estimatedFare = Math.round(estimatedFare * 10) / 10; // Clean decimal
   const estimatedMins = Math.max(2, Math.round(distanceKm * 4)); // ~4 mins per km
 
+  // Centered Path Geometry to ensure single thick line over the road
+  const centeredPathGeometry = useMemo(() => {
+    if (!selectedRoute?.pathGeometry) return [];
+    const OFFSET_DISTANCE = 0.00005; // ~5 meters perpendicular offset
+    return selectedRoute.pathGeometry.map((pt: any, index: number, arr: any[]) => {
+      if (index === 0) return pt;
+      const prev = arr[index - 1];
+      const dx = pt.longitude - prev.longitude;
+      const dy = pt.latitude - prev.latitude;
+      const length = Math.sqrt(dx * dx + dy * dy);
+      if (length === 0) return pt;
+      const nx = -dy / length;
+      const ny = dx / length;
+      return {
+        latitude: pt.latitude + ny * OFFSET_DISTANCE,
+        longitude: pt.longitude + nx * OFFSET_DISTANCE,
+      };
+    });
+  }, [selectedRoute?.pathGeometry]);
+
   return (
     <View className="flex-1">
       <MapView
@@ -200,19 +222,14 @@ export default function Home() {
               <Marker coordinate={selectedStop.coords} title={`Drop-off: ${selectedStop.name}`} pinColor="red" />
             )}
             
-            {/* Route Start */}
-            <Marker 
-              coordinate={selectedRoute.pathGeometry[0]} 
-              title={`Start`} 
-              pinColor="green" 
-            />
-            
-            {/* Route End */}
-            <Marker 
-              coordinate={selectedRoute.pathGeometry[selectedRoute.pathGeometry.length - 1]} 
-              title={`End`} 
-              pinColor="indigo" 
-            />
+            {/* Boarding Stop */}
+            {boardingStop && (
+              <Marker 
+                coordinate={boardingStop.coords} 
+                title={`Boarding: ${boardingStop.name}`} 
+                pinColor="green" 
+              />
+            )}
           </>
         )}
 
@@ -220,7 +237,7 @@ export default function Home() {
           <>
             {/* Outer Border (Darker Blue) */}
             <Polyline
-              coordinates={selectedRoute.pathGeometry}
+              coordinates={centeredPathGeometry}
               strokeColor="#1e3a8a" // Tailwind blue-900
               strokeWidth={8}
               lineCap="round"
@@ -228,12 +245,25 @@ export default function Home() {
             />
             {/* Inner Fill (Vibrant Blue) */}
             <Polyline
-              coordinates={selectedRoute.pathGeometry}
+              coordinates={centeredPathGeometry}
               strokeColor="#3b82f6" // Tailwind blue-500
               strokeWidth={4}
               lineCap="round"
               lineJoin="round"
             />
+            
+            {/* Walking Path to Boarding Stop */}
+            {boardingStop && (
+              <Polyline
+                coordinates={[
+                  userLocation,
+                  boardingStop.coords
+                ]}
+                strokeColor="#9ca3af" // Gray for walking
+                strokeWidth={3}
+                lineDashPattern={[5, 5]}
+              />
+            )}
           </>
         )}
       </MapView>
@@ -349,11 +379,34 @@ export default function Home() {
                     key={stop.id}
                     className={`py-4 flex-row items-center ${index !== array.length - 1 ? 'border-b border-[#3a3a3c]' : ''}`}
                     onPress={() => {
-                      // Attach dynamic index for calculations later
-                      setSelectedStop({ ...stop, stopIndex: selectedRoute.stops.findIndex((s: any) => s.id === stop.id) });
+                      const destIndex = selectedRoute.stops.findIndex((s: any) => s.id === stop.id);
+                      setSelectedStop({ ...stop, stopIndex: destIndex });
                       setIsSearching(false);
                       setDestination(stop.name);
-                      const bus = liveBuses.find(b => b.routeId === selectedRoute.id);
+
+                      // Find nearest boarding stop
+                      let nearest = selectedRoute.stops[0];
+                      let minDist = Infinity;
+                      let boardIndex = 0;
+                      selectedRoute.stops.forEach((s: any, idx: number) => {
+                        if (idx === destIndex) return; // Don't board at destination
+                        const dist = calculateDistance(userLocation.latitude, userLocation.longitude, s.coords.latitude, s.coords.longitude);
+                        if (dist < minDist) {
+                          minDist = dist;
+                          nearest = s;
+                          boardIndex = idx;
+                        }
+                      });
+                      
+                      setBoardingStop({ ...nearest, stopIndex: boardIndex });
+                      
+                      if (boardIndex < destIndex) {
+                        setDirectionLabel("Forward");
+                      } else {
+                        setDirectionLabel("Reverse");
+                      }
+
+                      const bus = liveBuses.find((b: any) => b.routeId === selectedRoute.id);
                       setSelectedBus(bus);
                       setTripState('confirming');
                     }}
@@ -364,7 +417,7 @@ export default function Home() {
                     <Text className="text-white text-[16px] font-medium">{stop.name}</Text>
                   </TouchableOpacity>
                 ))}
-              </View>
+              </ScrollView>
             </View>
           ) : (
             <View className="px-4 flex-1">
@@ -409,7 +462,12 @@ export default function Home() {
           {/* Header */}
           <View className="flex-row items-start justify-between mb-8">
             <View className="flex-1 pr-4">
-              <Text className="text-[26px] font-extrabold text-gray-900 tracking-tight leading-tight mb-2">{selectedStop.name}</Text>
+              <View className="flex-row items-center mb-2">
+                <Text className="text-[26px] font-extrabold text-gray-900 tracking-tight leading-tight mr-2">{selectedStop.name}</Text>
+                <View className="bg-blue-100 px-2 py-1 rounded-md">
+                  <Text className="text-blue-600 text-[10px] font-bold uppercase tracking-wider">{directionLabel}</Text>
+                </View>
+              </View>
               <Text className="text-[15px] font-medium text-gray-500">{distanceKm.toFixed(1)} km away • ~{estimatedMins} mins</Text>
             </View>
             <View className="bg-gray-50 px-4 py-3 rounded-2xl border border-gray-100">
@@ -459,6 +517,7 @@ export default function Home() {
                 setTripState('idle');
                 setSelectedRoute(null);
                 setSelectedStop(null);
+                setBoardingStop(null);
                 setSelectedBus(null);
               }}
             >
@@ -532,6 +591,7 @@ export default function Home() {
                 setTripState('idle');
                 setSelectedRoute(null);
                 setSelectedStop(null);
+                setBoardingStop(null);
                 setSelectedBus(null);
               }}
             >

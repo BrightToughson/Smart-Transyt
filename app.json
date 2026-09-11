@@ -30,7 +30,10 @@
           "image": "./assets/images/splashscreen-image/splashscreen.png",
           "imageWidth": 200
         }
-      ]
+      ],
+      "expo-image",
+      "expo-secure-store",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

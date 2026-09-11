@@ -4,7 +4,6 @@ import * as SecureStore from 'expo-secure-store';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { View, Text } from 'react-native';
 import '../global.css';
-
 const tokenCache = {
   async getToken(key: string) {
     try {
@@ -17,7 +16,9 @@ const tokenCache = {
       return item;
     } catch (error) {
       console.error('SecureStore get item error: ', error);
-      await SecureStore.deleteItemAsync(key);
+      try {
+        await SecureStore.deleteItemAsync(key);
+      } catch (e) {}
       return null;
     }
   },
