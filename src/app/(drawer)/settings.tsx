@@ -3,24 +3,24 @@ import { View, Text, TouchableOpacity, ScrollView, Alert, Linking } from 'react-
 import { SymbolView } from 'expo-symbols';
 import { useRouter } from 'expo-router';
 
+const ActionRow = ({ icon, title, subtitle, onPress, color = "#6b7280", isLast = false }: any) => (
+  <TouchableOpacity 
+    className={`flex-row items-center py-4 ${!isLast ? 'border-b border-gray-100' : ''}`}
+    onPress={onPress}
+  >
+    <View className="w-10 h-10 rounded-full items-center justify-center mr-4" style={{ backgroundColor: `${color}15` }}>
+      <SymbolView name={icon} size={20} tintColor={color} />
+    </View>
+    <View className="flex-1">
+      <Text className="text-gray-900 font-bold text-[16px]">{title}</Text>
+      {subtitle && <Text className="text-gray-500 text-[13px] mt-0.5">{subtitle}</Text>}
+    </View>
+    <SymbolView name="chevron.right" size={16} tintColor="#d1d5db" />
+  </TouchableOpacity>
+);
+
 export default function Settings() {
   const router = useRouter();
-
-  const ActionRow = ({ icon, title, subtitle, onPress, color = "#6b7280", isLast = false }: any) => (
-    <TouchableOpacity 
-      className={`flex-row items-center py-4 ${!isLast ? 'border-b border-gray-100' : ''}`}
-      onPress={onPress}
-    >
-      <View className="w-10 h-10 rounded-full items-center justify-center mr-4" style={{ backgroundColor: `${color}15` }}>
-        <SymbolView name={icon} size={20} tintColor={color} />
-      </View>
-      <View className="flex-1">
-        <Text className="text-gray-900 font-bold text-[16px]">{title}</Text>
-        {subtitle && <Text className="text-gray-500 text-[13px] mt-0.5">{subtitle}</Text>}
-      </View>
-      <SymbolView name="chevron.right" size={16} tintColor="#d1d5db" />
-    </TouchableOpacity>
-  );
 
   return (
     <ScrollView className="flex-1 bg-gray-50" contentContainerStyle={{ padding: 20, paddingBottom: 40 }}>

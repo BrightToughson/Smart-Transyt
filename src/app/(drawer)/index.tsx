@@ -44,18 +44,7 @@ export default function Home() {
   
   const { triggerBackgroundSummary, scheduleFiveMinuteWarning, cancelFiveMinuteWarning } = useRideNotifications();
 
-  // AppState listener for background notifications
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextAppState) => {
-      if (nextAppState.match(/inactive|background/) && tripState === 'active' && selectedStop) {
-        triggerBackgroundSummary(selectedStop.name, simulatedETA ?? estimatedMins, estimatedFare, hasPaid);
-      }
-    });
 
-    return () => {
-      subscription.remove();
-    };
-  }, [tripState, selectedStop, simulatedETA, estimatedMins, estimatedFare, hasPaid, triggerBackgroundSummary]);
 
   useEffect(() => {
     // Request GPS Permission and fetch live location
@@ -108,7 +97,7 @@ export default function Home() {
 
   // Simulation Timer
   useEffect(() => {
-    let timer: NodeJS.Timeout;
+    let timer: ReturnType<typeof setInterval>;
     if (tripState === 'active' && simulatedETA !== null && simulatedETA > 0) {
       timer = setInterval(() => {
         setSimulatedETA((prev) => {
@@ -239,6 +228,19 @@ export default function Home() {
   const estimatedMins = Math.max(2, Math.round(distanceKm * 4)); // ~4 mins per km
   
   const progressPercentage = simulatedETA !== null ? Math.max(0, Math.min(100, 100 - (simulatedETA / estimatedMins) * 100)) : 0;
+
+  // AppState listener for background notifications
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (nextAppState.match(/inactive|background/) && tripState === 'active' && selectedStop) {
+        triggerBackgroundSummary(selectedStop.name, simulatedETA ?? estimatedMins, estimatedFare, hasPaid);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [tripState, selectedStop, simulatedETA, estimatedMins, estimatedFare, hasPaid, triggerBackgroundSummary]);
 
   // Centered Path Geometry to ensure single thick line over the road
   const centeredPathGeometry = useMemo(() => {
