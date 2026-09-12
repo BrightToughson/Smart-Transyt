@@ -150,6 +150,7 @@ export default function DrawerLayout() {
           headerTintColor: '#fff',
         }}
       />
+
     </Drawer>
   );
 }

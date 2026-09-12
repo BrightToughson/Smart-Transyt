@@ -1,13 +1,10 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { KeyboardAvoidingView, View, Text, TextInput, TouchableOpacity, SafeAreaView, Platform, Animated, PanResponder, Dimensions, ScrollView, Image, LayoutAnimation, UIManager } from 'react-native';
-
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
-  UIManager.setLayoutAnimationEnabledExperimental(true);
-}
+import { KeyboardAvoidingView, View, Text, TextInput, TouchableOpacity, SafeAreaView, Platform, Animated, PanResponder, Dimensions, ScrollView, Image, AppState } from 'react-native';
 import { useUser } from '@clerk/expo';
+import { useRideNotifications } from '@/hooks/useRideNotifications';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import MapView, { Marker, Polyline, Callout } from '@/components/Map';
-import { useLocationStore, useWalletStore, useHistoryStore } from '@/store';
+import { useLocationStore, useWalletStore } from '@/store';
 import { useRouter, useNavigation } from 'expo-router';
 import { SymbolView } from 'expo-symbols';
 import * as Location from 'expo-location';
@@ -37,7 +34,6 @@ export default function Home() {
   const [weather, setWeather] = useState<{ temp: number, icon: string } | null>(null);
   const { setDestination, destination } = useLocationStore();
   const balance = useWalletStore((state) => state.balance);
-  const addRecord = useHistoryStore((state) => state.addRecord);
   const router = useRouter();
   const navigation = useNavigation();
 
@@ -45,6 +41,21 @@ export default function Home() {
 
   // Use BUSES from mockData
   const [liveBuses, setLiveBuses] = useState(BUSES);
+  
+  const { triggerBackgroundSummary, scheduleFiveMinuteWarning, cancelFiveMinuteWarning } = useRideNotifications();
+
+  // AppState listener for background notifications
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState.match(/inactive|background/) && tripState === 'active' && selectedStop) {
+        triggerBackgroundSummary(selectedStop.name, simulatedETA ?? estimatedMins, estimatedFare, hasPaid);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [tripState, selectedStop, simulatedETA, estimatedMins, estimatedFare, hasPaid, triggerBackgroundSummary]);
 
   useEffect(() => {
     // Request GPS Permission and fetch live location
@@ -129,7 +140,7 @@ export default function Home() {
     if (boardingStop && userLocation) {
       const fetchWalkingRoute = async () => {
         try {
-          const res = await fetch(`https://router.project-osrm.org/route/v1/foot/${userLocation.longitude},${userLocation.latitude};${boardingStop.coords.longitude},${boardingStop.coords.latitude}?geometries=geojson`);
+          const res = await fetch(`https://router.project-osrm.org/route/v1/driving/${userLocation.longitude},${userLocation.latitude};${boardingStop.coords.longitude},${boardingStop.coords.latitude}?geometries=geojson`);
           const data = await res.json();
           if (data.routes && data.routes.length > 0) {
             const coords = data.routes[0].geometry.coordinates.map((coord: any) => ({
@@ -148,35 +159,6 @@ export default function Home() {
     }
   }, [boardingStop, userLocation]);
 
-  const isMinimizedRef = useRef(isConfirmSheetMinimized);
-  useEffect(() => {
-    isMinimizedRef.current = isConfirmSheetMinimized;
-  }, [isConfirmSheetMinimized]);
-
-  const toggleConfirmSheet = (minimize: boolean) => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setIsConfirmSheetMinimized(minimize);
-  };
-
-  const panResponder = useMemo(() => PanResponder.create({
-    onStartShouldSetPanResponder: () => true,
-    onMoveShouldSetPanResponder: (_, gestureState) => {
-      return Math.abs(gestureState.dy) > 5;
-    },
-    onPanResponderRelease: (evt, gestureState) => {
-      if (Math.abs(gestureState.dy) < 5 && Math.abs(gestureState.dx) < 5) {
-        // Tap
-        toggleConfirmSheet(!isMinimizedRef.current);
-      } else if (gestureState.dy > 20) {
-        // Swipe down -> minimize
-        toggleConfirmSheet(true);
-      } else if (gestureState.dy < -20) {
-        // Swipe up -> maximize
-        toggleConfirmSheet(false);
-      }
-    }
-  }), []);
-
   const handleSuccessReset = () => {
     setPaymentProcessState('idle');
     setTripState('idle');
@@ -186,19 +168,7 @@ export default function Home() {
     setSelectedBus(null);
     setHasPaid(false);
     setSimulatedETA(null);
-  };
-
-  const recordTrip = () => {
-    if (selectedRoute && selectedStop) {
-      addRecord({
-        id: Math.random().toString(36).substr(2, 9),
-        date: new Date().toISOString(),
-        route: selectedRoute.name,
-        destination: selectedStop.name,
-        fare: estimatedFare,
-        paymentMethod: paymentMethod,
-      });
-    }
+    cancelFiveMinuteWarning();
   };
 
   const executePayment = () => {
@@ -207,7 +177,6 @@ export default function Home() {
     } else {
       setPaymentProcessState('processing');
       setTimeout(() => {
-        recordTrip();
         setPaymentProcessState('success');
         setTimeout(handleSuccessReset, 1500);
       }, 2000);
@@ -240,7 +209,6 @@ export default function Home() {
   const handleCashConfirmed = () => {
     setPaymentProcessState('processing');
     setTimeout(() => {
-      recordTrip();
       setPaymentProcessState('success');
       setTimeout(handleSuccessReset, 1500);
     }, 1000);
@@ -664,12 +632,19 @@ export default function Home() {
       {tripState === 'confirming' && selectedRoute && selectedStop && (
         <View className="absolute bottom-0 left-0 right-0 bg-white rounded-t-[32px] shadow-[0_-8px_40px_rgba(0,0,0,0.1)] pt-4 pb-10 px-6">
           {/* Grabber Toggle */}
-          <View 
-            className="w-full items-center justify-center py-4 -mt-4 mb-2"
-            {...panResponder.panHandlers}
+          <TouchableOpacity 
+            className="w-full items-center justify-center py-2 -mt-2 mb-4"
+            activeOpacity={0.6}
+            onPress={() => setIsConfirmSheetMinimized(!isConfirmSheetMinimized)}
           >
             <View className="w-12 h-1.5 bg-gray-200 rounded-full" />
-          </View>
+            <SymbolView 
+              name={isConfirmSheetMinimized ? "chevron.up" : "chevron.down"} 
+              size={14} 
+              tintColor="#d1d5db" 
+              style={{ marginTop: 4 }} 
+            />
+          </TouchableOpacity>
 
           {/* Header */}
           <View className={`flex-row items-start justify-between ${isConfirmSheetMinimized ? '' : 'mb-8'}`}>
@@ -691,35 +666,56 @@ export default function Home() {
           {!isConfirmSheetMinimized && (
             <>
               {/* Payment Method */}
-              <View className="mb-6">
-                <Text className="text-[15px] font-bold text-gray-900 mb-3">Payment Method</Text>
-                <View className="flex-col gap-2">
-                  {[
-                    { id: 'wallet', label: 'Smart Wallet', icon: 'creditcard.fill', color: '#3b82f6', subtitle: `GHC ${balance.toFixed(2)} available` },
-                    { id: 'momo', label: 'Mobile Money', icon: 'iphone', color: '#f59e0b', subtitle: 'MTN, Telecel, AT' },
-                    { id: 'cash', label: 'Cash Payment', icon: 'banknote', color: '#22c55e', subtitle: 'Pay conductor directly' },
-                    { id: 'qr', label: 'Scan QR Code', icon: 'qrcode', color: '#8b5cf6', subtitle: 'Scan conductor device' },
-                  ].map((method) => (
-                    <TouchableOpacity
-                      key={method.id}
-                      onPress={() => setPaymentMethod(method.id as any)}
-                      className={`flex-row items-center p-3 rounded-2xl border ${paymentMethod === method.id ? 'bg-[#f0f9ff] border-blue-500' : 'bg-white border-gray-100'}`}
-                      activeOpacity={0.7}
-                    >
-                      <View className="w-10 h-10 rounded-xl bg-gray-50 items-center justify-center mr-3 border border-gray-100">
-                        <SymbolView name={method.icon as any} size={20} tintColor={method.color} />
-                      </View>
-                      <View className="flex-1">
-                        <Text className={`text-[15px] font-bold ${paymentMethod === method.id ? 'text-gray-900' : 'text-gray-700'}`}>{method.label}</Text>
-                        <Text className="text-[12px] text-gray-400 font-medium mt-0.5">{method.subtitle}</Text>
-                      </View>
-                      <View className={`w-6 h-6 rounded-full border items-center justify-center ${paymentMethod === method.id ? 'bg-blue-500 border-blue-500 shadow-sm shadow-blue-500/30' : 'border-gray-200'}`}>
-                        {paymentMethod === method.id && (
-                          <SymbolView name="checkmark" size={12} tintColor="#ffffff" weight="bold" />
-                        )}
-                      </View>
-                    </TouchableOpacity>
-                  ))}
+              <View className="mb-8">
+                <Text className="text-[17px] font-extrabold text-gray-900 mb-4 tracking-tight">Payment Method</Text>
+                <View className="flex-row gap-3">
+                  {/* Wallet */}
+                  <TouchableOpacity 
+                    onPress={() => setPaymentMethod('wallet')}
+                    className={`flex-1 rounded-[20px] py-4 px-1 items-center justify-center border-[2px] ${paymentMethod === 'wallet' ? 'bg-blue-50 border-blue-500' : 'bg-gray-50 border-transparent'}`}
+                    activeOpacity={0.7}
+                  >
+                    <View className={`w-[42px] h-[42px] rounded-full items-center justify-center mb-2 shadow-sm ${paymentMethod === 'wallet' ? 'bg-blue-500 shadow-blue-500/30' : 'bg-white shadow-gray-200'}`}>
+                      <SymbolView name="creditcard.fill" size={20} tintColor={paymentMethod === 'wallet' ? "#ffffff" : "#6b7280"} />
+                    </View>
+                    <Text className={`text-[12px] font-bold ${paymentMethod === 'wallet' ? 'text-blue-700' : 'text-gray-500'}`}>Wallet</Text>
+                  </TouchableOpacity>
+
+                  {/* MoMo */}
+                  <TouchableOpacity 
+                    onPress={() => setPaymentMethod('momo')}
+                    className={`flex-1 rounded-[20px] py-4 px-1 items-center justify-center border-[2px] ${paymentMethod === 'momo' ? 'bg-blue-50 border-blue-500' : 'bg-gray-50 border-transparent'}`}
+                    activeOpacity={0.7}
+                  >
+                    <View className={`w-[42px] h-[42px] rounded-full items-center justify-center mb-2 shadow-sm ${paymentMethod === 'momo' ? 'bg-blue-500 shadow-blue-500/30' : 'bg-white shadow-gray-200'}`}>
+                      <SymbolView name="iphone" size={20} tintColor={paymentMethod === 'momo' ? "#ffffff" : "#6b7280"} />
+                    </View>
+                    <Text className={`text-[12px] font-bold ${paymentMethod === 'momo' ? 'text-blue-700' : 'text-gray-500'}`}>MoMo</Text>
+                  </TouchableOpacity>
+
+                  {/* Cash */}
+                  <TouchableOpacity 
+                    onPress={() => setPaymentMethod('cash')}
+                    className={`flex-1 rounded-[20px] py-4 px-1 items-center justify-center border-[2px] ${paymentMethod === 'cash' ? 'bg-blue-50 border-blue-500' : 'bg-gray-50 border-transparent'}`}
+                    activeOpacity={0.7}
+                  >
+                    <View className={`w-[42px] h-[42px] rounded-full items-center justify-center mb-2 shadow-sm ${paymentMethod === 'cash' ? 'bg-blue-500 shadow-blue-500/30' : 'bg-white shadow-gray-200'}`}>
+                      <SymbolView name="banknote" size={20} tintColor={paymentMethod === 'cash' ? "#ffffff" : "#6b7280"} />
+                    </View>
+                    <Text className={`text-[12px] font-bold ${paymentMethod === 'cash' ? 'text-blue-700' : 'text-gray-500'}`}>Cash</Text>
+                  </TouchableOpacity>
+
+                  {/* QR */}
+                  <TouchableOpacity 
+                    onPress={() => setPaymentMethod('qr')}
+                    className={`flex-1 rounded-[20px] py-4 px-1 items-center justify-center border-[2px] ${paymentMethod === 'qr' ? 'bg-blue-50 border-blue-500' : 'bg-gray-50 border-transparent'}`}
+                    activeOpacity={0.7}
+                  >
+                    <View className={`w-[42px] h-[42px] rounded-full items-center justify-center mb-2 shadow-sm ${paymentMethod === 'qr' ? 'bg-blue-500 shadow-blue-500/30' : 'bg-white shadow-gray-200'}`}>
+                      <SymbolView name="qrcode" size={20} tintColor={paymentMethod === 'qr' ? "#ffffff" : "#6b7280"} />
+                    </View>
+                    <Text className={`text-[12px] font-bold ${paymentMethod === 'qr' ? 'text-blue-700' : 'text-gray-500'}`}>QR Code</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
 
@@ -745,6 +741,7 @@ export default function Home() {
                 setHasPaid(false); // Reset payment state for new trip
                 setSimulatedETA(estimatedMins);
                 setShowPaymentPrompt(false);
+                scheduleFiveMinuteWarning(estimatedMins);
               }}
             >
               <Text className="text-white text-[16px] font-bold mr-2">Confirm Ride</Text>
@@ -814,6 +811,7 @@ export default function Home() {
                   setBoardingStop(null);
                   setSelectedBus(null);
                   setHasPaid(false);
+                  cancelFiveMinuteWarning();
                 }}
               >
                 <SymbolView name="xmark" size={20} tintColor="#ef4444" style={hasPaid ? {marginRight: 6} : {}} />
